@@ -1,0 +1,474 @@
+---
+title: "Multi-Trait Simulations"
+author: "Seren Villwock"
+date: "May 16, 2022"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 6
+    fig_width: 12
+    highlight: haddock
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: no
+      toc_depth: 2
+editor_options: 
+  chunk_output_type: console
+---
+  
+<style>
+pre {
+  overflow-x: auto;
+}
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(cache=FALSE)
+knitr::opts_chunk$set(tidy=TRUE)
+knitr::opts_chunk$set(results="hold")
+knitr::opts_chunk$set(collapse=TRUE)
+knitr::opts_chunk$set(fig.show="hold")
+knitr::opts_chunk$set(tidy.opts = list(wrap=FALSE))
+```
+
+
+## Objectives
+Determine under which conditions adding a trait in multivariate genomic prediction will increase prediction accuracy for another trait. To do this, I will use `AlphaSimR` to simulate breeding with multitrait index selection across a grid search of different trait parameters, varying the trait covariances, heritabilities, and the ratio of genetic to environmental correlations between the traits. I will compare the prediction accuracy of the multivariate prediction to the univariate prediction to determine when the use of a selection index is worthwhile, and when it just adds additional noise. I will model the simulation parameters off of a cassava breeding population with negatively correlated traits, dry matter and carotenoid content.
+
+(use some extreme values initially to test the sensitivity of the MT model and potentially narrow the grid space.)
+
+
+## Methods
+Use `AlphaSimR` to simulate correlated traits and traits that are affected by genotype by environment interaction. Analyze traits using sommer.
+
+The trait means and variances were taken from Rabbi et al. 2017.
+
+
+### Script setup
+Install packages, start the README.md, set the random seed  
+```{r Script setup, echo=FALSE}
+ip <- installed.packages()
+packages_used <- c("AlphaSimR", "tidyverse", "devtools","sommer","here", "ggplot2")
+
+for (package in packages_used){
+  isInstalled <- package %in% rownames(ip)
+  if (!isInstalled){
+    stop(paste("ERROR: you need to install the", package, "package"))
+  } else{
+    library(package, character.only=T)
+  }
+}#END packages_used
+
+random_seed <- 571997
+set.seed(random_seed)
+```
+
+
+### Set file locations relative to the project folder using `here`  
+```{r set here path}
+here::i_am("analysis/Simulations.Rmd")
+```
+
+
+### Generate a founder population
+```{r}
+source("code/implement_selection.R")
+```
+
+
+
+### Implement selection
+```{r}
+source("code/implement_selection.R")
+test5cycle <- implement_selection() 
+#returns: traceP, traceMTG, traceSTG)
+saveRDS(test5cycle, file="data/test5cycle.RDS")
+```
+
+### Examine results 
+```{r}
+traceP <- test5cycle[[1]] #phenotypic selection
+traceP$cycle <- as.factor(traceP$cycle)
+traceMTG <- test5cycle[[2]] #gs with multitrait model
+traceMTG$cycle <- as.factor(traceMTG$cycle)
+traceSTG <- test5cycle[[3]] #gs with single trait models
+traceSTG$cycle <- as.factor(traceSTG$cycle)
+
+#plot progress for total carotenoid content
+ggplot(traceP, aes(cycle, X2)) +
+  geom_boxplot(aes(color="phenotypic selection")) +
+  geom_boxplot(data= traceMTG, aes(cycle, X2, color="multi-trait prediction")) +
+  geom_boxplot(data= traceSTG, aes(cycle, X2, color="single-trait prediction")) +
+  xlab("cycle of selection") +
+  ylab("total carotenoid content") +
+  scale_color_discrete("selection method")
+
+
+#plot progress for dry matter
+ggplot(traceP, aes(cycle, X1)) +
+  geom_boxplot(aes(color="phenotypic selection")) +
+  geom_boxplot(data= traceMTG, aes(cycle, X1, color= "multi-trait prediction")) +
+  geom_boxplot(data= traceSTG, aes(cycle, X1, color="single-trait prediction")) +
+  xlab("cycle of selection") +
+  ylab("dry matter") +
+  scale_color_discrete("selection method")
+```
+
+
+
+
+### Coalescent simulator to create founder haplotypes
+
+Species and population parameters
+Number of chromosomes, effective population size, number of segregating sites and QTL
+```{r Species trait and population parameters, echo=FALSE}
+historicalNe <- 200
+nFounders <- historicalNe
+nChr <- 18
+segSites <- 2000
+nQTL <- 80
+nSNP <- 500
+```
+Historical effective population size `historicalNe` = `r historicalNe`  
+Number of founders `nFounders` = `r nFounders`  
+Number of chromosomes `nChr` = `r nChr`  
+Each chromosome has `segSites` = `r segSites` segregating sites  
+Each chromosome has `nQTL` = `r nQTL` QTL
+
+### Initiate simulation
+Specify Trait means and variances
+
+```{r Initiate simulation}
+founderHaps <- runMacs2(nInd=nFounders, nChr=nChr, segSites=segSites, Ne=historicalNe, histNe=NULL, histGen=NULL)
+SP <- SimParam$new(founderHaps)
+
+traitMeans <- c(DM=28.6, TC=3.8) #DM= dry matter; TC= total carotenoids/g fresh weight
+# Specify the additive variance and correlation: 1 on the diagonal
+addVar <- c(DM=16.52, TC=1)
+addCor <- matrix(c(1, 0.5, 0.5, 1), nrow=2) #additive correlation matrix
+# Specify the error correlation and calculate error covariance
+errVar <- c(DM=3, TC=0.1)
+errCor <- 0.1; errCov <- errCor*prod(sqrt(errVar))
+errCov <- matrix(c(errVar[1], errCov, errCov, errVar[2]), nrow=2) #error covariance matrix
+
+SP$addTraitA(nQtlPerChr=nQTL, mean=traitMeans, var=addVar, corA=addCor)
+SP$addSnpChip(nSnpPerChr=nSNP)
+
+# Create a new population of founders
+founders <- newPop(founderHaps, simParam=SP)
+nProgeny=nFounders
+progenyPop <- randCross(founders, nCrosses=nProgeny, nProgeny=6)
+mtPhenos=setPheno(progenyPop,varE=errCov)
+#Creating a matrix with phenotypes and genotypes
+simdata=cbind(c(1:length(progenyPop@id)), mtPhenos@pheno,mtPhenos@gv)
+
+```
+
+
+### Calculate genomic relationship matrix
+Here we use the code found in calcRelationshipMatrices.R to calculate genomic relationships using SNP genotypes
+
+```{r Make relationship matrices}
+source("./code/calcRelationshipMatrices.R")
+snpMat <- pullSnpGeno(progenyPop)
+snpRelMat <- calcGenomicRelationshipMatrix(snpMat)
+
+```
+
+### Implement genomic selection on simulated population
+
+# Model the data with sommer, predict best lines
+```{r}
+# create dataframe to pass to the mixed model software
+dataf=data.frame(mean=as.factor(rep(1,length(simdata[,1]))),variety=as.factor(simdata[,1]),DM_phenotype=as.double(simdata[,2]),TC_phenotype=as.double(simdata[,3]),trueGV1=as.double(simdata[,4]),trueGV2=as.double(simdata[,5]))
+
+# Adding a small value to the diagonal of the G matrix to ensure it can be inverted
+Gsnp=snpRelMat+diag(.0005,length(snpRelMat[,1]),length(snpRelMat[,1]))
+#Gsnpi=solve(snpRelMat+diag(.0005,length(snpRelMat[,1]),length(snpRelMat[,1])))
+
+# Map elements in the relationship matrix to the phenotypes
+rownames(Gsnp)=levels(dataf$variety)
+colnames(Gsnp)=levels(dataf$variety)
+
+
+#running multi-trait and univariate models in sommer
+#MTM
+
+MTM <- mmer(cbind(DM_phenotype, TC_phenotype) ~ 1, 
+            #give a vector of two traits and sommer knows you are running a multitrait model
+            random= ~ vs(variety, Gtc=unsm(2), Gu=Gsnp) , 
+            rcov= ~ vs(units, Gtc=unsm(2)), #Gtc = unstructured 2x2 matrix
+            data=dataf, verbose = FALSE)
+
+
+#saveRDS(MTM, file="data/MTM_model_062122.RDS")
+summary(MTM)
+
+#running predict function to get variety effects for trait 1 and trait 2
+#aMT<-sommer::predict.mmer(MTM,classify=c("variety")) 
+#pMT=aMT$pvals
+#psMT=pMT[order(pMT$trait, pMT$variety),]
+
+#saveRDS(psMT, file="data/psMT.RDS")
+
+# subset for variety effects
+DM_MT_BLUP <- psMT %>% dplyr::filter(trait == "DM_phenotype") %>% 
+  dplyr::select(predicted.value, variety)
+
+TC_MT_BLUP <- psMT %>% dplyr::filter(trait == "TC_phenotype") %>% 
+  dplyr::select(predicted.value, variety)
+```
+
+Single trait models:
+```{r}
+#Single trait models
+DM_S <- mmer(DM_phenotype ~ 1,
+             random= ~ vs(variety, Gu=Gsnp),
+             rcov= ~ units,
+             data=dataf, verbose = FALSE)
+#summary(DM_S)
+
+aDM <-sommer::predict.mmer(DM_S, classify=c("variety")) 
+pDM=aDM$pvals
+psDM=pDM[order(pDM$variety),]
+
+
+
+TC_S <- mmer(TC_phenotype ~ 1,
+             random= ~ vs(variety, Gu=Gsnp),
+             rcov= ~ units,
+             data=dataf, verbose = FALSE)
+#summary(TC_S)
+
+aTC <-sommer::predict.mmer(TC_S, classify=c("variety")) 
+pTC=aTC$pvals
+psTC=pTC[order(pTC$variety),]
+
+
+
+# subset for variety effects
+DM_ST_BLUP <- psDM %>% dplyr::filter(trait == "DM_phenotype") %>% 
+  dplyr::select(predicted.value, variety)
+
+TC_ST_BLUP <- psTC %>% dplyr::filter(trait == "TC_phenotype") %>% 
+  dplyr::select(predicted.value, variety)
+
+
+saveRDS(DM_S, file="data/DM_S.RDS")
+saveRDS(TC_S, file="data/TC_S.RDS")
+saveRDS(psDM, file="data/psDM.RDS")
+saveRDS(psTC, file="data/psTC.RDS")
+```
+
+
+
+
+
+
+#####
+Reload simulation and model data from here:
+```{r}
+psMT = readRDS(file="data/psMT.RDS")
+MTM = readRDS(file="data/MTM_model_062122.RDS")
+
+DM_S = readRDS(file="data/DM_S.RDS")
+TC_S = readRDS(file="data/TC_S.RDS")
+psDM = readRDS(file="data/psDM.RDS")
+psTC = readRDS(file="data/psTC.RDS")
+```
+
+
+Generate a selection index
+```{r}
+# Importance of each trait in selection
+econVal <- c(DM = 1, TC = 0.8)
+addCov <- addCor * sqrt( addVar[1] * addVar[2]  ) 
+phenCov <-  addCov + errCov
+selIdxCoef <- solve(phenCov) %*% addCov %*% econVal  #solve inverts the matrix
+
+nToSelect <- nProgeny*0.1 #select top 10%
+```
+
+Select on phenotypes using the selection index:
+```{r phenotypic selection}
+progPhen <- AlphaSimR::pheno(mtPhenos)
+#checked that varieties are sorted in order
+
+#calculate selection index:
+Pindex <- progPhen %*% selIdxCoef
+PwhichToSelect <- order(Pindex, decreasing=T)[1:nToSelect]
+
+# Plot the selected and not selected individuals
+# Not selected in black, selected in red (col=2)
+xlim=range(progPhen[,1])
+ylim=range(progPhen[,2])
+plot(progPhen[-PwhichToSelect,], pch=1, xlab="Dry Matter Content [%]", ylab="Total Carotenoids (ug/g FW)", xlim=xlim, ylim=ylim, main="phenotypic selection")
+points(progPhen[PwhichToSelect,], pch=16, col=2)
+
+```
+
+Select on  estimated variety effects using the selection index:
+```{r genotypic selection}
+#calculate selection index for multitrait model:
+MTprogVals <- full_join(DM_MT_BLUP, TC_MT_BLUP, by="variety")
+
+MTGindex <- as.matrix(MTprogVals[,c(1,3)]) %*% selIdxCoef
+MTGwhichToSelect <- order(MTGindex, decreasing=T)[1:nToSelect]
+
+xlim=range(progPhen[,1])
+ylim=range(progPhen[,2])
+plot(progPhen[-MTGwhichToSelect,], pch=1, xlab="Dry Matter Content [%]", ylab="Total Carotenoids (ug/g FW)", xlim=xlim, ylim=ylim, main="multitrait GS")
+points(progPhen[MTGwhichToSelect,], pch=16, col=2)
+
+
+
+#calculate selection index for single trait models:
+STprogVals <- full_join(DM_ST_BLUP, TC_ST_BLUP, by="variety")
+
+STGindex <- as.matrix(STprogVals[,c(1,3)]) %*% selIdxCoef
+STGwhichToSelect <- order(STGindex, decreasing=T)[1:nToSelect]
+
+xlim=range(progPhen[,1])
+ylim=range(progPhen[,2])
+plot(progPhen[-STGwhichToSelect,], pch=1, xlab="Dry Matter Content [%]", ylab="Total Carotenoids (ug/g FW)", xlim=xlim, ylim=ylim, main="single trait GS")
+points(progPhen[STGwhichToSelect,], pch=16, col=2)
+
+
+
+```
+
+
+
+Repeat phenotypic selection over multiple cycles
+```{r}
+nCycles <- 5
+
+newPhenos <- mtPhenos
+trace <- data.frame()
+for (i in (1:nCycles)){
+  # Subset for selected parents
+  selected_varieties <- newPhenos[whichToSelect]
+  
+  # Save phenotypes of selected lines
+  to_save <- data.frame(selected_varieties@pheno, cycle = rep(i, length(whichToSelect)))
+  trace <- rbind(trace, to_save)
+
+  # Make random crosses among selected lines
+  newPop <- randCross(selected_varieties, nCrosses=nProgeny, nProgeny=6)
+
+  # Phenotype the progeny
+  newPhenos = setPheno(newPop, varE=errCov, simParam = SP)
+  progPhen <- AlphaSimR::pheno(newPhenos)
+
+  #calculate index
+  index <- progPhen %*% selIdxCoef
+  whichToSelect <- order(index, decreasing=T)[1:nToSelect]
+}
+
+
+```
+
+Evaluate:
+```{r}
+traceplot <- ggplot(trace, aes(X1,X2)) +
+  geom_point(aes(color=as.factor(cycle)))
+```
+
+
+
+
+
+
+## 
+
+
+
+
+
+
+
+
+## Results
+
+
+
+## Discussion
+
+
+
+
+
+
+
+
+### old code below here
+
+See why it's not selecting the best lines:
+```{r, eval=F}
+#original index based on "BLUP" attempt
+index <- as.matrix(progVals[,-2]) %*% selIdxCoef
+whichToSelect <- order(index, decreasing=T)[1:nToSelect]
+
+#label varieties
+indexdf <- as.data.frame(index)
+colnames(indexdf) <- "index"
+indexdf$variety <- 1:nrow(indexdf)
+#sort by index
+indexsort <- indexdf[order(index, decreasing=T),]
+indexsort$indexrank <- 1:nrow(indexsort)
+
+
+#compare to phenotypic index:
+pheno_index <- progPhen %*% selIdxCoef
+
+#label varieties
+pindexdf <- as.data.frame(pheno_index)
+colnames(pindexdf) <- "pheno_index"
+pindexdf$variety <- 1:nrow(pindexdf)
+#sort by index
+pindexsort <- pindexdf[order(pheno_index, decreasing=T),]
+pindexsort$pindexrank <- 1:nrow(pindexsort)
+
+
+
+#compare to true genetic values:
+trueGV_index <- as.matrix(dataf[,5:6]) %*% selIdxCoef
+trueGVdf <- as.data.frame(trueGV_index)
+colnames(trueGVdf) <- "trueGV_index"
+trueGVdf$variety <- 1:nrow(trueGVdf)
+#sort by index
+Gindexsort <- trueGVdf[order(trueGV_index, decreasing=T),]
+Gindexsort$Gindexrank <- 1:nrow(Gindexsort)
+
+
+
+#compare genetic value vs phenotypic selection
+indices <- full_join(pindexsort, indexsort, by="variety") %>% full_join(Gindexsort, by="variety")
+
+saveRDS(indices, file="data/compare_indices_types.RDS")
+```
+Everything seems right but the phenotypic/true indexes are way off from the predicted genotypic values index. I think it's an issue with the predicted values output from sommer::predict are in factor level order not numeric order.
+
+
+
+
+Use the selected lines as parents for the next cycle of selection:
+```{r}
+selected_varieties <- mtPhenos[whichToSelect]
+
+# Make random crosses among selected lines
+newPop <- randCross(selected_varieties, nCrosses=nProgeny, nProgeny=6)
+
+# Phenotype the progeny
+newPhenos = setPheno(newPop, varE=errCov, simParam = SP)
+
+
+```
+

@@ -62,75 +62,48 @@ implement_pheno_selection <- function(progeny, multitrait=TRUE, nCycles = 5){
   colnames(pheno_data) <- c("variety", "DM_pheno", "TC_pheno", "DM_gv", "TC_gv")
   pheno_data$variety <- as.factor(pheno_data$variety)
 
-  #assign row numbers to the parents
-  parents <- as.data.frame(sort(as.numeric(unique(c(pop_data@father, pop_data@mother)))))
-  parents$row <- seq(1:nrow(parents))
-
-  #convert the parent IDs into their corresponding pedigree row IDs
-  pollen_par <- sapply(X = pop_data@father, function(x){parents$row[parents[,1] == x]})
-  seed_par <- sapply(X = pop_data@mother, function(x){parents$row[parents[,1] == x]})
-
-  #convert the progeny IDs into their corresponding pedigree row IDs
-  progeny <- as.data.frame(pop_data@id)
-  progeny$rowid <- seq(from=(nrow(parents)+1), to=(nrow(parents) + nrow(progeny)))
-
-  #generate three-column pedigree
-  ped <- as.data.frame(cbind(progeny$rowid, pollen_par, seed_par))
-
-  founder_rows <- data.frame(parents[,2], rep(0,length(parents)), rep(0, length(parents)))
-  colnames(founder_rows) <- c("indvl", "pollen_par", "seed_par")
-  colnames(ped) <- c("indvl", "pollen_par", "seed_par")
-
-  pedigree <- rbind(founder_rows, ped)
-
-
-  # The first column is the row number
-  # pollen and seed parent columns refer directly to rows
-  # all indvl row IDs can be matched back to their AlphaSim IDs using the keys "progeny" and "parents"
-
-
-  ## Calculate pedigree relationship matrix
+  ## Generate a relationship matrix from a three-column pedigree
   source("./code/calcRelationshipMatrices.R")
-  # Return a coefficient of coancestry matrix from a three-column pedigree
-  CC_mat <- pedigreeToCCmatrix(pedigree)
+  ped <- cbind(pop_data@id, pop_data@father, pop_data@mother)
+  parents <- unique(c(pop_data@father, pop_data@mother))
+  founders <- cbind(parents, rep(0,length(parents)), rep(0, length(parents)))
+  pedigree <- rbind(founders, ped)
+  pedigree_named <- convertNamesToRows(pedigree)
+  CC_mat <- pedigreeToCCmatrix(pedigree_named)
 
-  # double check with convertNamesToRows() function -- yes, they are the same
-  ped_2 <- cbind(pop_data@id, pop_data@father, pop_data@mother)
-  parents_2 <- unique(c(pop_data@father, pop_data@mother))
-  founders_2 <- cbind(parents_2, rep(0,length(parents_2)), rep(0, length(parents_2)))
-  ped_2_ready <- rbind(founders_2, ped_2)
+  # Calculate A matrix
+  if(i == 1){
+    #remove unphenotyped founders from CC_mat for first cycle
+    CC_mat_prog <- CC_mat[-c(1:(length(parents))), -c(1:(length(parents)))]
 
-  pedigree_2 <- convertNamesToRows(ped_2_ready)
-  CC_mat_2 <- pedigreeToCCmatrix(pedigree_2)
+  } else {CC_mat_prog <- CC_mat} #otherwise leave it as is
+
+  # Map elements in the relationship matrix to the phenotypes
+  rownames(CC_mat_prog) <- levels(pheno_data$variety)
+  colnames(CC_mat_prog) = levels(pheno_data$variety)
+
+  A_mat <- CC_mat_prog * 2
 
 
-
-
-
-  # Estimate variance parameters with a linear model
-  # use the coefficient of coancestry matrix as the covariance structure for variety
+  ## Estimate variance parameters with a linear model
+  # using the A matrix as the covariance structure for variety
 
   if (multitrait ==TRUE){
 
     MTmodel <- mmer(cbind(DM_pheno, TC_pheno) ~ 1,
-                   random= ~ vs(variety, Gtc=unsm(2), Gu=CC_mat),
+                   random= ~ vs(variety, Gtc=unsm(2), Gu=A_mat),
                    rcov= ~ vs(units, Gtc=unsm(2)),
                           data = pheno_data, verbose = TRUE)
-
-    MTmodel_2 <- mmer(cbind(DM_pheno, TC_pheno) ~ 1,
-                    random= ~ vs(variety, Gtc=unsm(2), Gu=CC_mat_2),
-                    rcov= ~ vs(units, Gtc=unsm(2)),
-                    data = pheno_data, verbose = TRUE)
 
 
   } else {
 
-    DMmodel <- mmer(DM_pheno, ~ 1,
+    DMmodel <- mmer(DM_pheno ~ 1,
                     random= ~ vs(variety, Gtc=unsm(2), Gu=CC_mat),
                     rcov= ~ vs(units, Gtc=unsm(2)),
                     data = pheno_data, verbose = TRUE)
 
-    TCmodel <- mmer(TC_pheno, ~ 1,
+    TCmodel <- mmer(TC_pheno ~ 1,
                     random= ~ vs(variety, Gtc=unsm(2), Gu=CC_mat),
                     rcov= ~ vs(units, Gtc=unsm(2)),
                     data = pheno_data, verbose = TRUE)

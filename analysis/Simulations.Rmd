@@ -78,16 +78,19 @@ here::i_am("analysis/Simulations.Rmd")
 
 
 ### Generate a founder population
-```{r}
+```{r, eval=F}
 source("code/implement_selection.R")
 progeny <- generate_founders()
+saveRDS(progeny, file="data/founder_progeny_pop.RDS")
 ```
 
 
 
 ### Implement selection
 ```{r}
-source("code/implement_selection.R")
+testprog <- readRDS("data/founder_progeny_pop.RDS")
+
+#source("code/implement_selection.R")
 test5cycle <- implement_selection() 
 #returns: traceP, traceMTG, traceSTG)
 saveRDS(test5cycle, file="data/test5cycle.RDS")

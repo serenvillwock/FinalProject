@@ -80,6 +80,7 @@ here::i_am("analysis/Simulations.Rmd")
 ### Generate a founder population
 ```{r}
 source("code/implement_selection.R")
+progeny <- generate_founders()
 ```
 
 

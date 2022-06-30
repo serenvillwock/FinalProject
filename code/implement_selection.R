@@ -1,11 +1,9 @@
 
-## Function to implement phenotypic & genomic selection on simulated population with given trait parameters ##
-
-implement_selection <- function(DM_TC_adcorr = 0.2,
-                        DM_errvar = 3,
-                        TC_errvar = 0.1,
-                        DM_TC_ercorr = 0.2,
-                        nCycles = 5){
+## Function to generate a founder population
+generate_founders <- function(DM_TC_adcorr = -0.2,
+                              DM_TC_ercorr = -0.1,
+                                DM_errvar = 41.08,
+                                TC_errvar = 4.35){
 
   ## Species trait and population parameters
   historicalNe <- 200
@@ -16,16 +14,21 @@ implement_selection <- function(DM_TC_adcorr = 0.2,
   nSNP <- 1000
 
   ## Specify trait means and variances
-  founderHaps <- runMacs2(nInd=nFounders, nChr=nChr, segSites=segSites, Ne=historicalNe, histNe=NULL, histGen=NULL)
-  SP <- SimParam$new(founderHaps)
+  founderHaps <- runMacs2(nInd=nFounders, nChr=nChr, segSites=segSites,
+                          Ne=historicalNe, histNe=NULL, histGen=NULL)
+  SP <<- SimParam$new(founderHaps)
 
-  traitMeans <- c(DM=28.6, TC=3.8) #DM= dry matter; TC= total carotenoids/g fresh weight
+  traitMeans <- c(DM=24.12, TC=6.53) #DM= dry matter; TC= total carotenoids/g fresh weight
+  # Parkes et al. 2020
 
   # Specify the additive variance and correlation: 1 on the diagonal
-  addVar <- c(DM=16.52, TC=1)
+  addVar <- c(DM=18.44, TC=1.36) #Parkes 2020
   addCor <- matrix(c(1, DM_TC_adcorr, DM_TC_adcorr, 1), nrow=2) #additive correlation matrix
+  #default correlation: -0.2
   # Specify the error correlation and calculate error covariance
+
   errVar <- c(DM=DM_errvar, TC=TC_errvar)
+  #default error variances: DM: 41.08, TC: 4.35 (Parkes 2020 dominance + error variation)
   errCor <- DM_TC_ercorr; errCov <- errCor*prod(sqrt(errVar))
   errCov <- matrix(c(errVar[1], errCov, errCov, errVar[2]), nrow=2) #error covariance matrix
 
@@ -39,7 +42,102 @@ implement_selection <- function(DM_TC_adcorr = 0.2,
   mtPhenos = setPheno(progenyPop,varE=errCov)
 
   #Create a matrix with phenotypes and genotypes
-  simdata=cbind(c(1:length(progenyPop@id)), mtPhenos@pheno,mtPhenos@gv)
+  simdata=cbind(c(1:length(progenyPop@id)), mtPhenos@pheno, mtPhenos@gv)
+
+  return(list(mtPhenos, as.data.frame(simdata)))
+
+}
+
+
+
+## Function to implement phenotypic & genomic selection on simulated population with given trait parameters ##
+# Input: `progeny` is a list output from the generate_founders() function
+# with the first element containing the progeny of the founding AlphaSim population
+# and the second element containing a dataframe with progeny's phenotypes and genotypes
+
+implement_pheno_selection <- function(progeny, multitrait=TRUE, nCycles = 5){
+
+  pop_data <- progeny[[1]]
+  pheno_data <- progeny[[2]]
+  colnames(pheno_data) <- c("variety", "DM_pheno", "TC_pheno", "DM_gv", "TC_gv")
+  pheno_data$variety <- as.factor(pheno_data$variety)
+
+  #assign row numbers to the parents
+  parents <- as.data.frame(sort(as.numeric(unique(c(pop_data@father, pop_data@mother)))))
+  parents$row <- seq(1:nrow(parents))
+
+  #convert the parent IDs into their corresponding pedigree row IDs
+  pollen_par <- sapply(X = pop_data@father, function(x){parents$row[parents[,1] == x]})
+  seed_par <- sapply(X = pop_data@mother, function(x){parents$row[parents[,1] == x]})
+
+  #convert the progeny IDs into their corresponding pedigree row IDs
+  progeny <- as.data.frame(pop_data@id)
+  progeny$rowid <- seq(from=(nrow(parents)+1), to=(nrow(parents) + nrow(progeny)))
+
+  #generate three-column pedigree
+  ped <- as.data.frame(cbind(progeny$rowid, pollen_par, seed_par))
+
+  founder_rows <- data.frame(parents[,2], rep(0,length(parents)), rep(0, length(parents)))
+  colnames(founder_rows) <- c("indvl", "pollen_par", "seed_par")
+  colnames(ped) <- c("indvl", "pollen_par", "seed_par")
+
+  pedigree <- rbind(founder_rows, ped)
+
+
+  # The first column is the row number
+  # pollen and seed parent columns refer directly to rows
+  # all indvl row IDs can be matched back to their AlphaSim IDs using the keys "progeny" and "parents"
+
+
+  ## Calculate pedigree relationship matrix
+  source("./code/calcRelationshipMatrices.R")
+  # Return a coefficient of coancestry matrix from a three-column pedigree
+  CC_mat <- pedigreeToCCmatrix(pedigree)
+
+  # double check with convertNamesToRows() function -- yes, they are the same
+  ped_2 <- cbind(pop_data@id, pop_data@father, pop_data@mother)
+  parents_2 <- unique(c(pop_data@father, pop_data@mother))
+  founders_2 <- cbind(parents_2, rep(0,length(parents_2)), rep(0, length(parents_2)))
+  ped_2_ready <- rbind(founders_2, ped_2)
+
+  pedigree_2 <- convertNamesToRows(ped_2_ready)
+  CC_mat_2 <- pedigreeToCCmatrix(pedigree_2)
+
+
+
+
+
+  # Estimate variance parameters with a linear model
+  # use the coefficient of coancestry matrix as the covariance structure for variety
+
+  if (multitrait ==TRUE){
+
+    MTmodel <- mmer(cbind(DM_pheno, TC_pheno) ~ 1,
+                   random= ~ vs(variety, Gtc=unsm(2), Gu=CC_mat),
+                   rcov= ~ vs(units, Gtc=unsm(2)),
+                          data = pheno_data, verbose = TRUE)
+
+    MTmodel_2 <- mmer(cbind(DM_pheno, TC_pheno) ~ 1,
+                    random= ~ vs(variety, Gtc=unsm(2), Gu=CC_mat_2),
+                    rcov= ~ vs(units, Gtc=unsm(2)),
+                    data = pheno_data, verbose = TRUE)
+
+
+  } else {
+
+    DMmodel <- mmer(DM_pheno, ~ 1,
+                    random= ~ vs(variety, Gtc=unsm(2), Gu=CC_mat),
+                    rcov= ~ vs(units, Gtc=unsm(2)),
+                    data = pheno_data, verbose = TRUE)
+
+    TCmodel <- mmer(TC_pheno, ~ 1,
+                    random= ~ vs(variety, Gtc=unsm(2), Gu=CC_mat),
+                    rcov= ~ vs(units, Gtc=unsm(2)),
+                    data = pheno_data, verbose = TRUE)
+    }
+
+
+
 
 
   #Calculate selection index

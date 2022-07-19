@@ -34,15 +34,15 @@ pedigreeToCCmatrix <- function(threeColPed){
 # to refer directly to rows, if you have an ID matrix with character names,
 # this function converts to integer IDs that point to rows.
 convertNamesToRows <- function(nameMat){
-  nameToRow <- 1:nrow(nameMat)
-  names(nameToRow) <- unlist(nameMat[,1])
-  parVecToRow <- function(parVec){
-    rowID <- integer(length(parVec))
-    rowID[parVec != "0"] <- nameToRow[parVec[parVec != "0"]]
+  nameToRow <- 1:nrow(nameMat) #vector of rownumbers
+  names(nameToRow) <- unlist(nameMat[,1]) #set names of vector as the ID names
+  parVecToRow <- function(parVec){ #for each column referring to the parents' names,
+    rowID <- integer(length(parVec)) #initialize a vector of 0s
+    rowID[parVec != "0"] <- nameToRow[parVec[parVec != "0"]] #identify row number corresponding to each of the non-founder parents
     return(rowID)
   }
-  return(cbind(nameToRow, 
-               parVecToRow(unlist(nameMat[,2])), 
+  return(cbind(nameToRow,
+               parVecToRow(unlist(nameMat[,2])),
                parVecToRow(unlist(nameMat[,3])))
          )
 }

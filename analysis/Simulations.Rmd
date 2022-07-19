@@ -84,17 +84,33 @@ progeny <- generate_founders()
 saveRDS(progeny, file="data/founder_progeny_pop.RDS")
 ```
 
-
-
-### Implement selection
+Load founder population:
 ```{r}
-testprog <- readRDS("data/founder_progeny_pop.RDS")
-
-#source("code/implement_selection.R")
-test5cycle <- implement_selection() 
-#returns: traceP, traceMTG, traceSTG)
-saveRDS(test5cycle, file="data/test5cycle.RDS")
+progeny <- readRDS("data/founder_progeny_pop.RDS")
+SP <- readRDS("data/SP.RDS")
+errCov <- readRDS("data/errCov.RDS")
 ```
+
+
+### Implement phenotypic selection
+```{r, multitrait model phenotypic selection}
+source("code/implement_selection.R")
+
+MTselection <- implement_pheno_selection(progeny, multitrait=T) 
+
+saveRDS(MTselection, file="data/MTselection_5cycle.RDS")
+```
+
+```{r, single trait models phenotypic selection}
+STselection <- implement_pheno_selection(progeny, multitrait=F) 
+
+saveRDS(MTselection, file="data/STselection_5cycle.RDS")
+```
+
+
+
+
+
 
 ### Examine results 
 ```{r}

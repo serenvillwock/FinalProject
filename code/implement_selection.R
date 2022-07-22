@@ -33,7 +33,7 @@ generate_founders <- function(DM_TC_adcorr = -0.2,
   #default error variances: DM: 41.08, TC: 4.35 (Parkes 2020 dominance + error variation)
   errCor <- DM_TC_ercorr; errCov <- errCor*prod(sqrt(errVar))
   errCov <- matrix(c(errVar[1], errCov, errCov, errVar[2]), nrow=2) #error covariance matrix
-  saveRDS(errCov, "./data/errCov.RDS")
+  #saveRDS(errCov, "./data/errCov.RDS")
 
   SP$addTraitA(nQtlPerChr=nQTL, mean=traitMeans, var=addVar, corA=addCor)
   SP$addSnpChip(nSnpPerChr=nSNP)
@@ -63,7 +63,8 @@ generate_founders <- function(DM_TC_adcorr = -0.2,
 # and the second element containing a dataframe with progeny's phenotypes and genotypes
 
 implement_pheno_selection <- function(progeny, multitrait=TRUE, nCycles = 5,
-                                      selection_proportion=0.1, nProgeny=6, nFounders=200){
+                                      selection_proportion=0.1, nProgeny=6, nFounders=200,
+                                      DMval=1, TCval=1){
 
   pop_data <- progeny[[1]]
   pheno_data <- progeny[[2]]
@@ -88,7 +89,7 @@ implement_pheno_selection <- function(progeny, multitrait=TRUE, nCycles = 5,
   traceP <- data.frame()
 
   # Save initial phenotypes
-  to_save <- data.frame(cbind(pheno_data, cycle = rep(i, nrow(pheno_data))))
+  to_save <- data.frame(cbind(pheno_data, cycle = rep(0, nrow(pheno_data))))
   traceP <- rbind(traceP, to_save)
 
   for(i in (1:nCycles)){
@@ -117,8 +118,8 @@ implement_pheno_selection <- function(progeny, multitrait=TRUE, nCycles = 5,
 
     # Calculate A matrix (additive relationship = twice coefficient of coancestry)
     A_mat <- CC_mat_prog * 2
-    Amatfilename <- paste0("../FinalProject_RDS_backup/Amat_cycle", i, ".RDS")
-    saveRDS(A_mat, file = Amatfilename)
+    #Amatfilename <- paste0("../FinalProject_RDS_backup/Amat_cycle", i, ".RDS")
+    #saveRDS(A_mat, file = Amatfilename)
     print("A matrix calculated")
 
 
@@ -126,31 +127,39 @@ implement_pheno_selection <- function(progeny, multitrait=TRUE, nCycles = 5,
     # using the A matrix as the covariance structure for variety
     if (multitrait == TRUE){
 
+      # Standardize phenotypes
+      pheno_data_std <- pheno_data %>%
+        mutate(across(2:4, ~ scale(as.numeric(.))))
+
       # Fit model
       MTmodel <- mmer(cbind(DM_pheno, TC_pheno) ~ 1,
                      random= ~ vsr(variety, Gtc=unsm(2), Gu=A_mat),
                      rcov= ~ vsr(units, Gtc=unsm(2)),
-                            data = pheno_data, verbose = TRUE)
+                            data = pheno_data_std, verbose = TRUE)
 
       MTfilename <- paste0("data/MTmodel_cycle", i, ".RDS")
-      saveRDS(MTmodel, file = MTfilename)
+      #saveRDS(MTmodel, file = MTfilename)
       print("model fit done")
 
 
+      # Extract variety effects
+      varefs <- data.frame(DM = MTmodel$U[[1]][[1]], TC = MTmodel$U[[1]][[2]])
+      varefs$variety <-  names(MTmodel$U[[1]][[1]])
+
       # Predict variety effects
-      aMT <- sommer::predict.mmer(MTmodel, classify=c("variety"))
-      pMT = aMT$pvals
-      psMT = pMT[order(pMT$trait, pMT$variety),]
+      #aMT <- sommer::predict.mmer(MTmodel, classify=c("variety"))
+      #pMT = aMT$pvals
+      #psMT = pMT[order(pMT$trait, pMT$variety),]
 
       # save checkpoint
-      psMTfilename <- paste0("../FinalProject_RDS_backup/psMT_cycle", i, ".RDS")
-      saveRDS(psMT, file = psMTfilename)
-      print("predictions done")
+      #psMTfilename <- paste0("../FinalProject_RDS_backup/psMT_cycle", i, ".RDS")
+      #saveRDS(psMT, file = psMTfilename)
+      #print("predictions done")
 
       # reformat predictions
-      DM_preds <- psMT[psMT$trait == "DM_pheno",]
-      TC_preds <- psMT[psMT$trait == "TC_pheno",]
-      all_preds <- merge(DM_preds, TC_preds, by="variety")
+      #DM_preds <- psMT[psMT$trait == "DM_pheno",]
+      #TC_preds <- psMT[psMT$trait == "TC_pheno",]
+      #all_preds <- merge(DM_preds, TC_preds, by="variety")
 
 
       # Extract variance/covariance estimates
@@ -160,156 +169,130 @@ implement_pheno_selection <- function(progeny, multitrait=TRUE, nCycles = 5,
 
 
       # Calculate selection index
-      econVal <- c(DM = 1, TC = 0.8)
+      econVal <- c(DMval, TCval)
       selIdxCoef <- solve(phenCov_est) %*% addCov_est %*% econVal  #solve inverts the matrix
-      all_preds$selIdx <- as.matrix(all_preds[,c(3,6)])  %*%  selIdxCoef
+      varefs$selIdx <- as.matrix(varefs[,c(1:2)])  %*%  selIdxCoef
 
 
-      # Make selections #it is selecting some parents / maybe variety names are off
+      # Make selections
       nToSelect <- nFounders
-      selected <- all_preds[order(all_preds$selIdx, decreasing=T),"variety"][1:nToSelect]
+      selected <- varefs[order(varefs$selIdx, decreasing=T),"variety"][1:nToSelect]
       MT_Pselected_varieties <- pop_data[as.character(selected)]
-      print("selections done")
+      #new_pop <- selectInd(pop_data, nInd=nFounders, trait=selIndex, b=selIdxCoef) %>%
+      #the selectInd selects different indvls than the manual way; not sure why
+
+      # Make crosses
+      new_pop <- randCross(MT_Pselected_varieties, nCrosses=nFounders, nProgeny=nProgeny) %>%
+        setPheno(varE=errCov, simParam=SP)
+
+
+      print("selections and crosses done")
 
       # Make crosses, unless it's the last cycle
-      if(i != nCycles){
+      #if(i != nCycles){
 
-        new_pop <- randCross(MT_Pselected_varieties, nCrosses=nFounders, nProgeny=nProgeny)
-        new_pop_phenod <- setPheno(new_pop, varE=errCov, simParam=SP)
+        #new_pop <- randCross(selected, nCrosses=nFounders, nProgeny=nProgeny)
+        #new_pop_phenod <- setPheno(new_pop, varE=errCov, simParam=SP)
 
-        # Set up matrix for next cycle
-        pop_data <- new_pop
-        pheno_data <- as.data.frame(cbind(new_pop_phenod@id, new_pop_phenod@pheno, new_pop_phenod@gv))
+      # Set up matrix for next cycle
+      pheno_data <- as.data.frame(cbind(new_pop@id, new_pop@pheno, new_pop@gv))
 
-        colnames(pheno_data) <- c("variety", "DM_pheno", "TC_pheno", "DM_gv", "TC_gv")
-        pheno_data$variety <- as.factor(pheno_data$variety)
-        pheno_data$DM_pheno <- as.numeric(pheno_data$DM_pheno)
-        pheno_data$TC_pheno <- as.numeric(pheno_data$TC_pheno)
+      colnames(pheno_data) <- c("variety", "DM_pheno", "TC_pheno", "DM_gv", "TC_gv")
+      pheno_data$variety <- as.factor(pheno_data$variety)
+      pheno_data$DM_pheno <- as.numeric(pheno_data$DM_pheno)
+      pheno_data$TC_pheno <- as.numeric(pheno_data$TC_pheno)
 
-        #save data
-        to_save <- data.frame(cbind(pheno_data, cycle = rep(i, nrow(pheno_data))))
-        traceP <- rbind(traceP, to_save)
-        print(paste0("cycle ", i, " saved!"))
-        saveRDS(traceP, file="../FinalProject_RDS_backup/lasttraceP.RDS")
+      pop_data <- new_pop
 
-      } # end crosses
+      #save data
+      to_save <- data.frame(cbind(pheno_data, cycle = rep(i, nrow(pheno_data))))
+      traceP <- rbind(traceP, to_save)
+      print(paste0("cycle ", i, " saved!"))
+      saveRDS(traceP, file="./data/lasttraceP.RDS")
+
+      #} end crosses
   } #end multitrait model predictions
 
-    else { #single trait model:
+    else { #single trait models:
 
-      # set up pedigree
-      ped_original <- cbind(pop_data@id, pop_data@father, pop_data@mother)
-      parents <- unique(c(pop_data@father, pop_data@mother))
-      founders <- cbind(parents, rep(0,length(parents)), rep(0, length(parents)))
-      pedigree <- rbind(founders, ped_original)
+      # Standardize phenotypes
+      pheno_data_std <- pheno_data %>%
+        mutate(across(2:4, ~ scale(as.numeric(.))))
 
-      pedigree_named <- convertNamesToRows(pedigree)
-      CC_mat <- pedigreeToCCmatrix(pedigree_named)
-
-      # Subset the CC_matix for just this generation
-      CC_end <- dim(CC_mat)[1]
-      CC_start <- CC_end - (nFounders*nProgeny) + 1
-      CC_mat_prog <- CC_mat[CC_start:CC_end, CC_start:CC_end]
-
-      # Map elements in the relationship matrix to the phenotypes
-      rownames(CC_mat_prog) <- levels(pheno_data$variety)
-      colnames(CC_mat_prog) <- levels(pheno_data$variety)
-
-
-      # Calculate A matrix (additive relationship = twice coefficient of coancestry)
-      A_mat <- CC_mat_prog * 2
-      Amatfilename <- paste0("../FinalProject_RDS_backup/Amat_ST_cycle", i, ".RDS")
-      saveRDS(A_mat, file = Amatfilename)
-      print("A matrix calculated")
 
       DMmodel <- mmer(DM_pheno ~ 1,
                       random= ~ vsr(variety, Gu=A_mat),
                       rcov= ~ units,
-                      data = pheno_data, verbose = TRUE)
+                      data = pheno_data_std, verbose = TRUE)
 
-      DMfilename <- paste0("data/DMmodel_cycle", i, ".RDS")
-      saveRDS(DMmodel, file = DMfilename)
+      #DMfilename <- paste0("data/DMmodel_cycle", i, ".RDS")
+      #saveRDS(DMmodel, file = DMfilename)
       print("DM model fit")
 
 
       TCmodel <- mmer(TC_pheno ~ 1,
                       random= ~ vsr(variety, Gu=A_mat),
                       rcov= ~ units,
-                      data = pheno_data, verbose = TRUE)
+                      data = pheno_data_std, verbose = TRUE)
 
-      TCfilename <- paste0("data/TCmodel_cycle", i, ".RDS")
-      saveRDS(TCmodel, file = TCfilename)
+      #TCfilename <- paste0("data/TCmodel_cycle", i, ".RDS")
+      #saveRDS(TCmodel, file = TCfilename)
       print("TC model fit")
 
 
-      # Predict variety effects for DM
-      aDM <- sommer::predict.mmer(DMmodel, classify=c("variety"))
-      pDM = aDM$pvals
-      psDM = pDM[order(pDM$trait,pDM$variety),]
-
-      # save checkpoint
-      psDMfilename <- paste0("../FinalProject_RDS_backup/psDM_cycle", i, ".RDS")
-      saveRDS(psDM, file = psDMfilename)
-      print("DM predictions done")
-
-      # Predict variety effects for TC
-      aTC <- sommer::predict.mmer(TCmodel, classify=c("variety"))
-      pTC = aTC$pvals
-      psTC = pTC[order(pTC$trait,pTC$variety),]
-
-      # save checkpoint
-      psTCfilename <- paste0("../FinalProject_RDS_backup/psTC_cycle", i, ".RDS")
-      saveRDS(psTC, file = psTCfilename)
-      print("TC predictions done")
-
-      # merge predictions
-      #DM_preds <- psDM[psMT$trait == "DM_pheno",]
-      #TC_preds <- psMT[psMT$trait == "TC_pheno",]
-      all_preds <- merge(psDM, psTC, by="variety")
+      # Extract variety effects
+      varefs <- data.frame(DM = DMmodel$U[[1]][[1]], TC = TCmodel$U[[1]][[1]])
+      varefs$variety <-  names(DMmodel$U[[1]][[1]])
 
 
       ## Estimate variance/covariance parameters:
       # (Additive covariance = cov of the breeding values?)
-      addCov_est <- cov(cbind(all_preds$predicted.value.x, all_preds$predicted.value.y))
+      addCov_est <- cov(cbind(varefs$DM, varefs$TC))
       # (Error covariance = cov of the residuals?)
       errCov_est <- cov(cbind(DMmodel$residuals, TCmodel$residuals))
       phenCov_est <-  addCov_est + errCov_est
 
 
       # Calculate selection index
-      econVal <- c(DM = 1, TC = 0.8)
+      econVal <- c(DM = DMval, TC = TCval)
       selIdxCoef <- solve(phenCov_est) %*% addCov_est %*% econVal  #solve inverts the matrix
-      all_preds$selIdx <- as.matrix(all_preds[,c(3,6)])  %*%  selIdxCoef
+      varefs$selIdx <- as.matrix(varefs[,c(1:2)])  %*%  selIdxCoef
 
 
       # Make selections
-      nToSelect <- nrow(all_preds)*selection_proportion #select top 10%
-      selected <- all_preds[order(all_preds$selIdx, decreasing=T),"variety"][1:nToSelect]
-      ST_Pselected_varieties <- pop_data[as.numeric(selected)]
+      nToSelect <- nFounders
+      selected <- varefs[order(varefs$selIdx, decreasing=T),"variety"][1:nToSelect]
+      ST_Pselected_varieties <- pop_data[as.character(selected)]
       print("selections done")
 
-    # Make crosses, unless it's the last cycle
-      if(i != nCycles){
 
-        new_pop <- randCross(ST_Pselected_varieties, nCrosses=nFounders, nProgeny=nProgeny)
-        new_pop_phenod = setPheno(new_pop, varE=errCov)
+      #selected <- selectInd(pop_data, nInd=nFounders, trait=selIndex, b=selIdxCoef)
+      #this selects different individuals than above; not sure why
 
-        # Set up matrix for next cycle
-        pop_data <- new_pop
-        pheno_data <- as.data.frame(cbind(new_pop_phenod@id, new_pop_phenod@pheno, new_pop_phenod@gv))
+      # Make crosses among selected individuals and phenotype
+      new_pop <-  randCross(ST_Pselected_varieties, nCrosses=nFounders, nProgeny=nProgeny) %>%
+        setPheno(varE=errCov, simParam=SP)
+      print("crosses done")
 
-        colnames(pheno_data) <- c("variety", "DM_pheno", "TC_pheno", "DM_gv", "TC_gv")
-        pheno_data$variety <- as.factor(pheno_data$variety)
-        pheno_data$DM_pheno <- as.numeric(pheno_data$DM_pheno)
-        pheno_data$TC_pheno <- as.numeric(pheno_data$TC_pheno)
 
-        #save data
-        to_save <- data.frame(cbind(pheno_data, cycle = rep(i, nrow(pheno_data))))
-        traceP <- rbind(traceP, to_save)
-        saveRDS(traceP, file="../FinalProject_RDS_backup/lasttraceP.RDS")
-        print(paste0("cycle ", i, " saved!"))
 
-      } #end crosses
+      # Set up matrix for next cycle
+      pheno_data <- as.data.frame(cbind(new_pop@id, new_pop@pheno, new_pop@gv))
+
+      colnames(pheno_data) <- c("variety", "DM_pheno", "TC_pheno", "DM_gv", "TC_gv")
+      pheno_data$variety <- as.factor(pheno_data$variety)
+      pheno_data$DM_pheno <- as.numeric(pheno_data$DM_pheno)
+      pheno_data$TC_pheno <- as.numeric(pheno_data$TC_pheno)
+
+      pop_data <- new_pop
+
+      #save data
+      to_save <- data.frame(cbind(pheno_data, cycle = rep(i, nrow(pheno_data))))
+      traceP <- rbind(traceP, to_save)
+      print(paste0("cycle ", i, " saved!"))
+      saveRDS(traceP, file="./data/lasttraceP.RDS")
+
+
     } #end single trait predictions
   } #end cycle
 
@@ -321,7 +304,198 @@ implement_pheno_selection <- function(progeny, multitrait=TRUE, nCycles = 5,
 
 
 
+## Function to implement selection on simulated population with given trait parameters ##
+# Using the marker relationship matrix
+# Input: `progeny` is a list output from the generate_founders() function
+# with the first element containing the progeny of the founding AlphaSim population
+# and the second element containing a dataframe with progeny's phenotypes and genotypes
 
+implement_g_selection <- function(progeny, multitrait=TRUE, nCycles = 5,
+                                      selection_proportion=0.1, nProgeny=6, nFounders=200,
+                                      DMval=1, TCval=1){
+
+  pop_data <- progeny[[1]]
+  pheno_data <- progeny[[2]]
+
+
+  colnames(pheno_data) <- c("variety", "DM_pheno", "TC_pheno", "DM_gv", "TC_gv")
+  pheno_data$variety <- as.factor(pheno_data$variety)
+  pheno_data$DM_pheno <- as.numeric(pheno_data$DM_pheno)
+  pheno_data$TC_pheno <- as.numeric(pheno_data$TC_pheno)
+
+
+  ## Calculate genomic relationship matrix
+  source("./code/calcRelationshipMatrices.R")
+  snpMat <- pullSnpGeno(pop_data)
+  snpRelMat <- calcGenomicRelationshipMatrix(snpMat)
+
+
+  # Set up a dataframe to store data from each cycle
+  traceG <- data.frame()
+
+  # Save initial phenotypes
+  to_save <- data.frame(cbind(pheno_data, cycle = rep(0, nrow(pheno_data))))
+  traceG <- rbind(traceG, to_save)
+
+  for(i in (1:nCycles)){
+    print(i)
+
+    # Calculate relationship matrix
+    if(i != 1){ #pedigree was already set up above for first cycle
+      snpMat <- pullSnpGeno(pop_data)
+      snpRelMat <- calcGenomicRelationshipMatrix(snpMat)
+
+      # Subset the SNP matrix for just this generation by cutting off the parental rows and columns
+      gen_end <- dim(snpRelMat)[1]
+      gen_start <- gen_end - (nFounders*nProgeny) + 1
+      snpRelMat_prog <- snpRelMat[gen_start:gen_end, gen_start:gen_end]
+
+      }
+
+    print("genomic relationship matrix calculated")
+
+    # Add a small value to the diagonal of the G matrix to ensure it can be inverted
+    Gsnp=snpRelMat_prog+diag(.0005,length(snpRelMat_prog[,1]),length(snpRelMat_prog[,1]))
+
+    # Map elements in the relationship matrix to the phenotypes
+    rownames(Gsnp)=levels(pheno_data$variety)
+    colnames(Gsnp)=levels(pheno_data$variety)
+
+
+    # Standardize phenotypes
+    pheno_data_std <- pheno_data %>%
+      mutate(across(2:4, ~ scale(as.numeric(.))))
+
+
+    if(multitrait == TRUE){
+
+      # Fit multi-trait model
+      MTM <- mmer(cbind(DM_pheno, TC_pheno) ~ 1,
+                  random= ~ vsr(variety, Gtc=unsm(2), Gu=Gsnp) ,
+                  rcov= ~ vsr(units, Gtc=unsm(2)), #Gtc = unstructured 2x2 matrix
+                  data=pheno_data_std, verbose = TRUE)
+
+      print("model fit done")
+
+      # Predict variety effects
+      #aMT <- sommer::predict.mmer(MTM, classify=c("variety"))
+      #pMT = aMT$pvals
+      #psMT = pMT[order(pMT$trait, pMT$variety),]
+
+      # Extract variety effects
+      varefs <- data.frame(DM = MTM$U[[1]][[1]], TC = MTM$U[[1]][[2]])
+      varefs$variety <-  names(MTM$U[[1]][[1]])
+
+      # Extract variance/covariance estimates
+      addCov_est <- MTM$sigma$`u:variety`
+      errCov_est <- MTM$sigma$`u:units`
+      phenCov_est <-  addCov_est + errCov_est
+
+    } #end multitrait model
+
+    else{ #single trait models
+
+
+      # Standardize phenotypes
+      pheno_data_std <- pheno_data %>%
+        mutate(across(2:4, ~ scale(as.numeric(.))))
+
+
+      DMmodel <- mmer(DM_pheno ~ 1,
+                      random= ~ vsr(variety, Gu=Gsnp),
+                      rcov= ~ units,
+                      data = pheno_data_std, verbose = TRUE)
+      print("DM model fit")
+
+
+      TCmodel <- mmer(TC_pheno ~ 1,
+                      random= ~ vsr(variety, Gu=Gsnp),
+                      rcov= ~ units,
+                      data = pheno_data_std, verbose = TRUE)
+      print("TC model fit")
+
+
+      # Extract variety effects
+      varefs <- data.frame(DM = DMmodel$U[[1]][[1]], TC = TCmodel$U[[1]][[1]])
+      varefs$variety <-  names(DMmodel$U[[1]][[1]])
+
+
+      ## Estimate variance/covariance parameters:
+      # (Additive covariance = cov of the breeding values?)
+      addCov_est <- cov(cbind(varefs$DM, varefs$TC))
+      # (Error covariance = cov of the residuals?)
+      errCov_est <- cov(cbind(DMmodel$residuals, TCmodel$residuals))
+      phenCov_est <-  addCov_est + errCov_est
+
+    }
+
+      # Calculate selection index
+      econVal <- c(DMval, TCval)
+      selIdxCoef <- solve(phenCov_est) %*% addCov_est %*% econVal
+      varefs$selIdx <- as.matrix(varefs[,c(1:2)])  %*%  selIdxCoef
+
+
+      # Make selections
+      nToSelect <- nFounders
+      selected <- varefs[order(varefs$selIdx, decreasing=T),"variety"][1:nToSelect]
+      Gselected_varieties <- pop_data[as.character(selected)]
+
+      # Make crosses
+      new_pop <- randCross(Gselected_varieties, nCrosses=nFounders, nProgeny=nProgeny) %>%
+        setPheno(varE=errCov, simParam=SP)
+
+    # Get set up for next cycle
+      pheno_data <- as.data.frame(cbind(new_pop@id, new_pop@pheno, new_pop@gv))
+      colnames(pheno_data) <- c("variety", "DM_pheno", "TC_pheno", "DM_gv", "TC_gv")
+      pheno_data$variety <- as.factor(pheno_data$variety)
+      pheno_data$DM_pheno <- as.numeric(pheno_data$DM_pheno)
+      pheno_data$TC_pheno <- as.numeric(pheno_data$TC_pheno)
+
+      pop_data <- new_pop
+
+      #save data
+      to_save <- data.frame(cbind(pheno_data, cycle = rep(i, nrow(pheno_data))))
+      traceG <- rbind(traceG, to_save)
+      print(paste0("cycle ", i, " saved!"))
+      saveRDS(traceG, file="./data/lasttraceG.RDS")
+
+  } #end cycle
+
+  return(traceG)
+
+} #end function
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#old version
 
 
 ## Function to implement genomic selection on simulated population with given trait parameters ##
@@ -391,7 +565,7 @@ implement_geno_selection <- function(progeny, multitrait=TRUE, nCycles = 5,
       phenCov_est <-  addCov_est + errCov_est
 
       # Calculate selection index
-      econVal <- c(DM = 1, TC = 0.8)
+      econVal <- c(DM = DMval, TC = TCval)
       selIdxCoef <- solve(phenCov_est) %*% addCov_est %*% econVal  #solve inverts the matrix
       all_preds$selIdx <- as.matrix(all_preds[,c(3,6)])  %*%  selIdxCoef
 
